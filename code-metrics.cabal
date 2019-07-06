@@ -27,9 +27,14 @@ library
                      , Cabal
                      , uniplate
                      , dates
+                     , time
                      , conduit
                      , resourcet
                      , cassava
+                     , tagged
+                     , gitlib
+                     , gitlib-cmdline
+                     , gitlib-libgit2
   hs-source-dirs:      src
   default-language:    Haskell2010
 

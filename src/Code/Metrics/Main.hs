@@ -7,10 +7,14 @@ module Code.Metrics.Main where
 
 import           "base"       GHC.Generics
 import           "base"       Control.Monad.IO.Class (MonadIO, liftIO)
-import           "base"       Data.List (isSuffixOf, isInfixOf, sort, nub, intercalate)
+import           "base"       Data.List (isSuffixOf, isInfixOf, sort, nub, intercalate, sortBy)
 import           "base"       System.Environment (getArgs)
 import qualified "bytestring" Data.ByteString.Char8 as B (pack)
 import qualified "bytestring" Data.ByteString.Lazy.Char8 as BL (putStrLn)
+import           "time"       Data.Time.Clock (UTCTime(..))
+import           "time"       Data.Time.LocalTime (LocalTime(..), ZonedTime(..), utc, utcToLocalTime)
+import           "time"       Data.Time.Calendar (fromGregorian)
+import           "tagged"     Data.Tagged
 import           "cassava"    Data.Csv
 import           "dates"      Data.Dates
 import           "Cabal"      Distribution.Verbosity (silent)
@@ -24,6 +28,11 @@ import           "resourcet"  Control.Monad.Trans.Resource (runResourceT)
 import           "conduit"    Data.Conduit
 import qualified "conduit"    Data.Conduit.List as CL
 import qualified "conduit"    Data.Conduit.Combinators as CC
+import           "gitlib"     Git.Types
+import           "gitlib"     Git.Repository
+import           "gitlib"     Git.Reference
+import           "gitlib-libgit2" Git.Libgit2 (lgFactory, LgRepo)
+--import           "gitlib-cmdline" Git.CmdLine (lgFactory, LgRepo)
 
 
 --
@@ -162,6 +171,50 @@ dependencies _       = (\_ -> return [])
 
 
 --
+commits :: FilePath -> IO [Commit LgRepo]
+commits path = do
+    withRepository lgFactory path $ do
+        (Just ref) <- resolveReference "HEAD"
+        let t = renderOid ref
+        o <- parseObjOid t
+        runConduit $ sourceObjects Nothing o False
+                  .| CC.map (\(CommitObjOid x) -> x)
+                  .| CC.mapM lookupCommit
+                  .| CL.consume
+
+
+sortByWhen :: [Commit LgRepo] -> [Commit LgRepo]
+sortByWhen = sortBy compareWhen
+    where
+        compareWhen :: Commit LgRepo -> Commit LgRepo -> Ordering
+        compareWhen (Commit _ _ _ (Signature _ _ (ZonedTime when1 _)) _ _ _)
+                    (Commit _ _ _ (Signature _ _ (ZonedTime when2 _)) _ _ _)
+            | when1 > when2  = LT
+            | when1 == when2 = EQ
+            | when1 < when2  = GT
+
+commitsBefore :: UTCTime -> [Commit LgRepo] -> [Commit LgRepo]
+commitsBefore date
+    = sortByWhen
+    . filter older
+    where
+        localTime :: LocalTime
+        localTime = utcToLocalTime utc date
+
+        older (Commit _ _ _(Signature _ _ (ZonedTime when _)) _ _ _) = when < localTime
+
+lastCommitBefore :: UTCTime -> [Commit LgRepo] -> Maybe (Commit LgRepo)
+lastCommitBefore date commits
+    | null commits' = Nothing
+    | otherwise     = Just $ head commits'
+    where
+        commits' :: [Commit LgRepo]
+        commits' = commitsBefore date commits
+
+date :: (Integer, Int) -> UTCTime
+date (year, month) = UTCTime (fromGregorian year month 1) 0
+
+--
 status :: Language -> FilePath -> IO Status
 status language path = do
     locs         <- countLines language path
@@ -180,6 +233,13 @@ status language path = do
 --
 main = do
     (path:_) <- getArgs
-    statuses <- mapM (flip status path) languages
-    BL.putStrLn $ encodeDefaultOrderedByName statuses
+    commits <- commits path
+    let mCommit = lastCommitBefore (date (2020, 3)) commits
+    print $ commitOid <$> mCommit
     return ()
+
+        ----runConduit $ sourceObjects Nothing (parseObjOid "a0282c1b276366b6e76ad82b77f23d1898702310") False .| CC.print
+        --return ()
+    ----statuses <- mapM (flip status path) languages
+    ----BL.putStrLn $ encodeDefaultOrderedByName statuses
+    --return ()
